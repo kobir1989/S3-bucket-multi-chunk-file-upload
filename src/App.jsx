@@ -60,62 +60,24 @@ function App() {
       if (!initRes.ok) throw new Error('Failed to initiate upload');
       const initData = await initRes.json();
       console.log('Init response:', initData);
-      const { uploadId, key } = initData;
+      const { uploadId, objectKey, urlList, documentId } = initData;
 
-      // Step 2: Get signed URLs for all parts ( calls /upload/get-signed-urls to get signed URLs for all parts)
-      const requestBody = {
-        key,
-        uploadId,
-        parts: numParts,
-        filename: file.name,
-        type: file.type,
-      };
-
-      console.log('Sending signed URLs request:', requestBody);
-
-      const presignedRes = await fetch(`${API_BASE_URL}/upload/get-signed-urls`, {
-        method: 'POST',
-        body: JSON.stringify(requestBody),
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: TOKEN,
-        },
-      });
-
-      const responseText = await presignedRes.text();
-      console.log('Raw response:', responseText);
-
-      let responseData;
-      try {
-        responseData = JSON.parse(responseText);
-        console.log('Parsed response:', responseData);
-      } catch (e) {
-        console.error('Failed to parse response:', e);
-        throw new Error('Invalid response from server');
+      if (!urlList || urlList.length === 0) {
+        throw new Error('No upload URLs received from server');
       }
 
-      if (!presignedRes.ok) {
-        throw new Error(
-          `Failed to get signed URLs: ${responseData.message || presignedRes.statusText}`
-        );
-      }
+      console.log('Received URL list with', urlList.length, 'URLs');
 
-      if (!responseData.urls) {
-        console.error('Response missing urls:', responseData);
-        throw new Error('No URLs received from server');
-      }
-
-      const { urls } = responseData;
-
-      // Step 3: Upload parts ( calls /upload/upload-part for each part)
+      // Step 3: Upload parts using the urlList
       const etags = [];
       let completedParts = 0;
 
-      for (let i = 0; i < numParts; i++) {
+      for (let i = 0; i < Math.min(numParts, urlList.length); i++) {
         const start = i * partSize;
         const end = Math.min(start + partSize, file.size);
         const blob = file.slice(start, end);
-        const { partNumber, url } = urls[i];
+        const url = urlList[i];
+        const partNumber = i + 1;
 
         const res = await fetch(url, {
           method: 'PUT',
@@ -125,7 +87,8 @@ function App() {
         if (!res.ok) throw new Error(`Failed to upload part ${partNumber}`);
 
         const etag = res.headers.get('ETag');
-        etags.push({ PartNumber: partNumber, ETag: etag });
+        console.log('E TAGS ===>', etag);
+        etags.push({ PartNumber: partNumber, ETag: etag.replaceAll('"', '') });
 
         completedParts++;
         setUploadProgress((completedParts / numParts) * 100);
@@ -134,7 +97,12 @@ function App() {
       // Step 4: Complete upload ( calls /upload/complete-upload to complete the upload)
       const completeRes = await fetch(`${API_BASE_URL}/doc/multipart-upload/complete`, {
         method: 'POST',
-        body: JSON.stringify({ key, uploadId, parts: etags }),
+        body: JSON.stringify({
+          key: objectKey,
+          uploadId,
+          partList: etags,
+          documentId,
+        }),
         headers: {
           'Content-Type': 'application/json',
           Authorization: TOKEN,
