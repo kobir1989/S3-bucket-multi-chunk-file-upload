@@ -6,12 +6,15 @@ const API_BASE_URL = 'https://testadmin-copy2.nitex.com/api/core';
 const TOKEN =
   'Bearer eyJhbGciOiJIUzUxMiIsInppcCI6IkdaSVAifQ.H4sIAAAAAAAA_z3OXwuCMBQF8O9ynyX8k0k-FVQglE8-FK2HiUsvzG3MTSzxuzcVejv87j1wRuhsCSmMBGzHdPFRjEBK4Hi6ZTkBb-Ur6xnPKneJ4jByiHMOXGAtRb40WtpUGBwEGjZsULzl0qZKadlTfuG0Xt4eK1vTSI0GWef0-ZrJGI2lNYuMkxOpayrwSw1K8R-WZ8X5TmACD5AaNyLZJn4chr7vARvUCvtg52D6AX6kSArdAAAA.rcaCY9rrfrtuvsL_TOMlp3ss1Vr24x2Pb_hYUsMhCstVVbhbCutRbcMV0vpN-2bDVv2s6VWxQpwL3v0Q5KK_Sw';
 
+const INITIAL_CHUNK_SIZE = 0.5 * 1024 * 1024; // 0.5MB for first 3 chunks
+const LATER_CHUNK_SIZE = 5 * 1024 * 1024; // 5MB for later chunks
+const SWITCH_AFTER_CHUNKS = 3;
+
 function App() {
   const [file, setFile] = useState(null);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [isUploading, setIsUploading] = useState(false);
   const [error, setError] = useState(null);
-  const [chunkBuffer, setChunkBuffer] = useState([]);
 
   const limit = pLimit(3);
 
@@ -27,25 +30,6 @@ function App() {
 
     setFile(file);
     setError(null);
-  };
-
-  // Prepare chunks before upload
-  const prepareChunks = (file, partSize) => {
-    const chunks = [];
-    let start = 0;
-
-    while (start < file.size) {
-      const end = Math.min(start + partSize, file.size);
-      chunks.push({
-        blob: file.slice(start, end),
-        start,
-        end,
-        attempts: 0,
-        partNumber: chunks.length + 1,
-      });
-      start = end;
-    }
-    return chunks;
   };
 
   // Retry logic for failed uploads
@@ -90,18 +74,14 @@ function App() {
         throw new Error('Cannot upload an empty file');
       }
 
-      const initialChunkSize = 512 * 1024; // 512KB for first few chunks
-      const laterChunkSize = 5 * 1024 * 1024; // 5MB for later chunks
-
       const chunks = [];
       let start = 0;
-      // Switch to large
-      const switchAfterChunks = 3;
 
       while (start < file.size) {
         const chunkNumber = chunks.length + 1;
         const currentChunkSize =
-          chunkNumber <= switchAfterChunks ? initialChunkSize : laterChunkSize;
+          chunkNumber <= SWITCH_AFTER_CHUNKS ? INITIAL_CHUNK_SIZE : LATER_CHUNK_SIZE;
+        // const currentChunkSize = LATER_CHUNK_SIZE;
         const end = Math.min(start + currentChunkSize, file.size);
 
         chunks.push({
@@ -142,38 +122,21 @@ function App() {
       let completedParts = 0;
       const uploadTimes = [];
 
-      const initialChunks = chunks.slice(0, 3);
-      const laterChunks = chunks.slice(3);
-
-      // Upload init chunk 1st
-      const initialResults = await Promise.all(
-        initialChunks.map((chunk, index) => uploadChunkWithRetry(chunk, urlList[index]))
-      );
-
-      initialResults.forEach((result, index) => {
-        etags[index] = result;
-        uploadTimes.push(result.uploadTime);
-        completedParts++;
-        setUploadProgress((completedParts / numParts) * 100);
-      });
-
-      // Then upload remaining chunks
-      const laterResults = await Promise.all(
-        laterChunks.map((chunk, index) => {
-          return limit(async () => {
-            const result = await uploadChunkWithRetry(chunk, urlList[index + 3]);
-            etags[index + 3] = result;
+      // Upload all chunks in parallel with concurrency limit
+      await Promise.all(
+        chunks.map((chunk, index) =>
+          limit(async () => {
+            const result = await uploadChunkWithRetry(chunk, urlList[index]);
+            etags[index] = result;
             uploadTimes.push(result.uploadTime);
 
             completedParts++;
             setUploadProgress((completedParts / numParts) * 100);
 
             return result;
-          });
-        })
+          })
+        )
       );
-
-      await Promise.all(laterResults);
 
       // Complete the upload
       const completeRes = await fetch(`${API_BASE_URL}/doc/multipart-upload/complete`, {
