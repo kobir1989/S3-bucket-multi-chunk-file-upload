@@ -16,8 +16,9 @@ function App() {
   const [isUploading, setIsUploading] = useState(false);
   const [error, setError] = useState(null);
   const [uploadTime, setUploadTime] = useState(0);
+  const [concurrencyLimit, setConcurrencyLimit] = useState(1);
 
-  const limit = pLimit(5);
+  const limit = pLimit(concurrencyLimit);
 
   const handleFileChange = async (e) => {
     const file = e.target.files[0];
@@ -72,6 +73,7 @@ function App() {
       setIsUploading(true);
       setError(null);
       setUploadProgress(0);
+      setConcurrencyLimit(1); // Reset to initial limit of 1
 
       if (file.size === 0) {
         throw new Error('Cannot upload an empty file');
@@ -127,6 +129,7 @@ function App() {
       const etags = new Array(numParts);
       let completedParts = 0;
       const uploadTimes = [];
+      let isFirstChunkUploaded = false;
 
       // Upload all chunks in parallel with concurrency limit
       await Promise.all(
@@ -138,6 +141,12 @@ function App() {
 
             completedParts++;
             setUploadProgress((completedParts / numParts) * 100);
+
+            // Increase concurrency limit after first chunk
+            if (!isFirstChunkUploaded) {
+              isFirstChunkUploaded = true;
+              setConcurrencyLimit(5);
+            }
 
             return result;
           })
