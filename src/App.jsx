@@ -7,16 +7,17 @@ const TOKEN =
   'Bearer eyJhbGciOiJIUzUxMiIsInppcCI6IkdaSVAifQ.H4sIAAAAAAAA_z3OXwuCMBQF8O9ynyX8k0k-FVQglE8-FK2HiUsvzG3MTSzxuzcVejv87j1wRuhsCSmMBGzHdPFRjEBK4Hi6ZTkBb-Ur6xnPKneJ4jByiHMOXGAtRb40WtpUGBwEGjZsULzl0qZKadlTfuG0Xt4eK1vTSI0GWef0-ZrJGI2lNYuMkxOpayrwSw1K8R-WZ8X5TmACD5AaNyLZJn4chr7vARvUCvtg52D6AX6kSArdAAAA.rcaCY9rrfrtuvsL_TOMlp3ss1Vr24x2Pb_hYUsMhCstVVbhbCutRbcMV0vpN-2bDVv2s6VWxQpwL3v0Q5KK_Sw';
 
 const INITIAL_CHUNK_SIZE = 0.5 * 1024 * 1024; // 0.5MB for first 3 chunks
-const LATER_CHUNK_SIZE = 5 * 1024 * 1024; // 5MB for later chunks
-const SWITCH_AFTER_CHUNKS = 3;
+const LATER_CHUNK_SIZE = 10 * 1024 * 1024; // 5MB for later chunks
+const SWITCH_AFTER_CHUNKS = 1;
 
 function App() {
   const [file, setFile] = useState(null);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [isUploading, setIsUploading] = useState(false);
   const [error, setError] = useState(null);
+  const [uploadTime, setUploadTime] = useState(0);
 
-  const limit = pLimit(3);
+  const limit = pLimit(5);
 
   const handleFileChange = async (e) => {
     const file = e.target.files[0];
@@ -42,11 +43,13 @@ function App() {
           body: chunk.blob,
         });
 
+        // console.log('chunk =>', chunk);
+
         if (!res.ok) throw new Error(`Failed to upload part ${chunk.partNumber}`);
 
         const uploadTime = performance.now() - startTime;
         console.log(`Chunk ${chunk.partNumber} uploaded in ${uploadTime}ms`);
-
+        setUploadTime((prev) => prev + uploadTime);
         const etag = res.headers.get('ETag');
         return {
           PartNumber: chunk.partNumber,
@@ -82,6 +85,8 @@ function App() {
         const currentChunkSize =
           chunkNumber <= SWITCH_AFTER_CHUNKS ? INITIAL_CHUNK_SIZE : LATER_CHUNK_SIZE;
         // const currentChunkSize = LATER_CHUNK_SIZE;
+        console.log('chunkNumber =>', chunkNumber);
+        console.log('currentChunkSize =>', (currentChunkSize / (1024 * 1024)).toFixed(2) + ' MB');
         const end = Math.min(start + currentChunkSize, file.size);
 
         chunks.push({
@@ -94,8 +99,9 @@ function App() {
         start = end;
       }
       const numParts = chunks.length;
-
+      setUploadTime(0);
       // Init upload
+      console.log('START INIT', new Date().toLocaleTimeString());
       const initRes = await fetch(`${API_BASE_URL}/doc/multipart-upload/initiate`, {
         method: 'POST',
         body: JSON.stringify({
@@ -152,7 +158,7 @@ function App() {
           Authorization: TOKEN,
         },
       });
-
+      console.log('END INIT', new Date().toLocaleTimeString());
       if (!completeRes.ok) throw new Error('Failed to complete upload');
 
       const { location } = await completeRes.json();
@@ -186,7 +192,9 @@ function App() {
               </div>
             )}
           </div>
-
+          {uploadTime > 0 && (
+            <div className='upload-time'>Upload time: {(uploadTime / 1000).toFixed(2)}s</div>
+          )}
           {error && <div className='error-message'>{error}</div>}
 
           {isUploading && (

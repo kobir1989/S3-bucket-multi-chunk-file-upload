@@ -107,3 +107,13 @@ button:disabled {
   background: #ccc;
   cursor: not-allowed;
 }
+
+.upload-time {
+  margin-top: 1rem;
+  margin-bottom: 1rem;
+  font-size: 0.8rem;
+  color: #666;
+  background-color: #f8f9fa;
+  padding: 0.5rem;
+  border-radius: 4px;
+}
