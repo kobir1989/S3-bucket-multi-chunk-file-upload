@@ -1,5 +1,6 @@
 import './App.css';
 import React, { useState } from 'react';
+import pLimit from 'p-limit';
 
 const API_BASE_URL = 'https://testadmin-copy2.nitex.com/api/core';
 const TOKEN =
@@ -10,6 +11,9 @@ function App() {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [isUploading, setIsUploading] = useState(false);
   const [error, setError] = useState(null);
+  const [chunkBuffer, setChunkBuffer] = useState([]);
+
+  const limit = pLimit(3);
 
   const handleFileChange = async (e) => {
     const file = e.target.files[0];
@@ -25,6 +29,54 @@ function App() {
     setError(null);
   };
 
+  // Prepare chunks before upload
+  const prepareChunks = (file, partSize) => {
+    const chunks = [];
+    let start = 0;
+
+    while (start < file.size) {
+      const end = Math.min(start + partSize, file.size);
+      chunks.push({
+        blob: file.slice(start, end),
+        start,
+        end,
+        attempts: 0,
+        partNumber: chunks.length + 1,
+      });
+      start = end;
+    }
+    return chunks;
+  };
+
+  // Retry logic for failed uploads
+  const uploadChunkWithRetry = async (chunk, url, maxRetries = 2) => {
+    while (chunk.attempts < maxRetries) {
+      try {
+        const startTime = performance.now();
+        const res = await fetch(url, {
+          method: 'PUT',
+          body: chunk.blob,
+        });
+
+        if (!res.ok) throw new Error(`Failed to upload part ${chunk.partNumber}`);
+
+        const uploadTime = performance.now() - startTime;
+        console.log(`Chunk ${chunk.partNumber} uploaded in ${uploadTime}ms`);
+
+        const etag = res.headers.get('ETag');
+        return {
+          PartNumber: chunk.partNumber,
+          ETag: etag.replaceAll('"', ''),
+          uploadTime,
+        };
+      } catch (err) {
+        chunk.attempts++;
+        if (chunk.attempts === maxRetries) throw err;
+        await new Promise((resolve) => setTimeout(resolve, 1000 * Math.pow(2, chunk.attempts)));
+      }
+    }
+  };
+
   const handleUpload = async (e) => {
     e.preventDefault();
     if (!file) return;
@@ -34,15 +86,36 @@ function App() {
       setError(null);
       setUploadProgress(0);
 
-      // Validate file size before proceeding
       if (file.size === 0) {
         throw new Error('Cannot upload an empty file');
       }
 
-      const partSize = Math.min(5 * 1024 * 1024, file.size);
-      const numParts = Math.max(1, Math.ceil(file.size / partSize));
+      const initialChunkSize = 512 * 1024; // 512KB for first few chunks
+      const laterChunkSize = 5 * 1024 * 1024; // 5MB for later chunks
 
-      // Step 1: Initiate multipart upload via backend ( calls /upload/initiate-upload to get an uploadId and key)
+      const chunks = [];
+      let start = 0;
+      // Switch to large
+      const switchAfterChunks = 3;
+
+      while (start < file.size) {
+        const chunkNumber = chunks.length + 1;
+        const currentChunkSize =
+          chunkNumber <= switchAfterChunks ? initialChunkSize : laterChunkSize;
+        const end = Math.min(start + currentChunkSize, file.size);
+
+        chunks.push({
+          blob: file.slice(start, end),
+          start,
+          end,
+          attempts: 0,
+          partNumber: chunkNumber,
+        });
+        start = end;
+      }
+      const numParts = chunks.length;
+
+      // Init upload
       const initRes = await fetch(`${API_BASE_URL}/doc/multipart-upload/initiate`, {
         method: 'POST',
         body: JSON.stringify({
@@ -59,48 +132,56 @@ function App() {
 
       if (!initRes.ok) throw new Error('Failed to initiate upload');
       const initData = await initRes.json();
-      console.log('Init response:', initData);
       const { uploadId, objectKey, urlList, documentId } = initData;
 
       if (!urlList || urlList.length === 0) {
         throw new Error('No upload URLs received from server');
       }
 
-      console.log('Received URL list with', urlList.length, 'URLs');
-
-      // Step 3: Upload parts using the urlList
-      const etags = [];
+      const etags = new Array(numParts);
       let completedParts = 0;
+      const uploadTimes = [];
 
-      for (let i = 0; i < Math.min(numParts, urlList.length); i++) {
-        const start = i * partSize;
-        const end = Math.min(start + partSize, file.size);
-        const blob = file.slice(start, end);
-        const url = urlList[i];
-        const partNumber = i + 1;
+      const initialChunks = chunks.slice(0, 3);
+      const laterChunks = chunks.slice(3);
 
-        const res = await fetch(url, {
-          method: 'PUT',
-          body: blob,
-        });
+      // Upload init chunk 1st
+      const initialResults = await Promise.all(
+        initialChunks.map((chunk, index) => uploadChunkWithRetry(chunk, urlList[index]))
+      );
 
-        if (!res.ok) throw new Error(`Failed to upload part ${partNumber}`);
-
-        const etag = res.headers.get('ETag');
-        console.log('E TAGS ===>', etag);
-        etags.push({ PartNumber: partNumber, ETag: etag.replaceAll('"', '') });
-
+      initialResults.forEach((result, index) => {
+        etags[index] = result;
+        uploadTimes.push(result.uploadTime);
         completedParts++;
         setUploadProgress((completedParts / numParts) * 100);
-      }
+      });
 
-      // Step 4: Complete upload ( calls /upload/complete-upload to complete the upload)
+      // Then upload remaining chunks
+      const laterResults = await Promise.all(
+        laterChunks.map((chunk, index) => {
+          return limit(async () => {
+            const result = await uploadChunkWithRetry(chunk, urlList[index + 3]);
+            etags[index + 3] = result;
+            uploadTimes.push(result.uploadTime);
+
+            completedParts++;
+            setUploadProgress((completedParts / numParts) * 100);
+
+            return result;
+          });
+        })
+      );
+
+      await Promise.all(laterResults);
+
+      // Complete the upload
       const completeRes = await fetch(`${API_BASE_URL}/doc/multipart-upload/complete`, {
         method: 'POST',
         body: JSON.stringify({
           key: objectKey,
           uploadId,
-          partList: etags,
+          partList: etags.map(({ PartNumber, ETag }) => ({ PartNumber, ETag })),
           documentId,
         }),
         headers: {
