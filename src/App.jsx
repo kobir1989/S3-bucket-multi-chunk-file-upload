@@ -4,10 +4,10 @@ import pLimit from 'p-limit';
 
 const API_BASE_URL = 'https://testadmin-copy2.nitex.com/api/core';
 const TOKEN =
-  'Bearer eyJhbGciOiJIUzUxMiIsInppcCI6IkdaSVAifQ.H4sIAAAAAAAA_z3OXwuCMBQF8O9ynyX8k0k-FVQglE8-FK2HiUsvzG3MTSzxuzcVejv87j1wRuhsCSmMBGzHdPFRjEBK4Hi6ZTkBb-Ur6xnPKneJ4jByiHMOXGAtRb40WtpUGBwEGjZsULzl0qZKadlTfuG0Xt4eK1vTSI0GWef0-ZrJGI2lNYuMkxOpayrwSw1K8R-WZ8X5TmACD5AaNyLZJn4chr7vARvUCvtg52D6AX6kSArdAAAA.rcaCY9rrfrtuvsL_TOMlp3ss1Vr24x2Pb_hYUsMhCstVVbhbCutRbcMV0vpN-2bDVv2s6VWxQpwL3v0Q5KK_Sw';
+  'Bearer eyJhbGciOiJIUzUxMiIsInppcCI6IkdaSVAifQ.H4sIAAAAAAAA_z3OzQqCQBQF4He5a4k0829VUIFQrlwUTYsRJ70wOsM4iiW-e-MI7Q7fvQfOBF1fQAITgb5jKv9IRiAhcDzd0oyAs_KVDYynpbns9t7OIC7ZNYE1FLltNLQu0T20qNm4wfYtbJtKqcRA-YXTyr49Vu51LRRqZJ3R52shrRUWvbYyzUaEqmiLX6pRtP9hWZqf7wRmcACpNiNCP4zjIPI9B9goLURRsDUw_wDLn9tJ3QAAAA.UjUept8rkY1uUUSDm879s9_WtWdOg7N2fl6iS7Uh_CLRLDeNKTtTrrQGNb1H7WCaXgFfxt5VgcsrdcxVMun7TA';
 
-const INITIAL_CHUNK_SIZE = 0.5 * 1024 * 1024; // 0.5MB for first 3 chunks
-const LATER_CHUNK_SIZE = 10 * 1024 * 1024; // 5MB for later chunks
+const INITIAL_CHUNK_SIZE = 5 * 1024 * 1024; // 5MB for first  chunks
+const LATER_CHUNK_SIZE = 20 * 1024 * 1024; // 10MB for later chunks
 const SWITCH_AFTER_CHUNKS = 1;
 
 function App() {
@@ -53,8 +53,8 @@ function App() {
         setUploadTime((prev) => prev + uploadTime);
         const etag = res.headers.get('ETag');
         return {
-          PartNumber: chunk.partNumber,
-          ETag: etag.replaceAll('"', ''),
+          partNumber: chunk.partNumber,
+          eTag: etag.replaceAll('"', ''),
           uploadTime,
         };
       } catch (err) {
@@ -86,9 +86,6 @@ function App() {
         const chunkNumber = chunks.length + 1;
         const currentChunkSize =
           chunkNumber <= SWITCH_AFTER_CHUNKS ? INITIAL_CHUNK_SIZE : LATER_CHUNK_SIZE;
-        // const currentChunkSize = LATER_CHUNK_SIZE;
-        console.log('chunkNumber =>', chunkNumber);
-        console.log('currentChunkSize =>', (currentChunkSize / (1024 * 1024)).toFixed(2) + ' MB');
         const end = Math.min(start + currentChunkSize, file.size);
 
         chunks.push({
@@ -103,7 +100,6 @@ function App() {
       const numParts = chunks.length;
       setUploadTime(0);
       // Init upload
-      console.log('START INIT', new Date().toLocaleTimeString());
       const initRes = await fetch(`${API_BASE_URL}/doc/multipart-upload/initiate`, {
         method: 'POST',
         body: JSON.stringify({
@@ -119,6 +115,7 @@ function App() {
       });
 
       if (!initRes.ok) throw new Error('Failed to initiate upload');
+      console.log('START TIME => ', new Date().toLocaleTimeString());
       const initData = await initRes.json();
       const { uploadId, objectKey, urlList, documentId } = initData;
 
@@ -129,25 +126,32 @@ function App() {
       const etags = new Array(numParts);
       let completedParts = 0;
       const uploadTimes = [];
-      let isFirstChunkUploaded = false;
 
-      // Upload all chunks in parallel with concurrency limit
+      // Upload the first chunk alone
+      const firstChunkResult = await uploadChunkWithRetry(chunks[0], urlList[0]);
+      console.log('firstChunkResult', firstChunkResult);
+      if (firstChunkResult) {
+        const delay = async () => {
+          await new Promise((resolve) => setTimeout(resolve, 200));
+          console.log('Timer Started =>');
+        };
+        await delay();
+      }
+      etags[0] = firstChunkResult;
+      uploadTimes.push(firstChunkResult.uploadTime);
+      completedParts++;
+      setUploadProgress((completedParts / numParts) * 100);
+
+      // Now upload the rest with concurrency limit 3
+      const restLimit = pLimit(3);
       await Promise.all(
-        chunks.map((chunk, index) =>
-          limit(async () => {
-            const result = await uploadChunkWithRetry(chunk, urlList[index]);
-            etags[index] = result;
+        chunks.slice(1).map((chunk, idx) =>
+          restLimit(async () => {
+            const result = await uploadChunkWithRetry(chunk, urlList[idx + 1]);
+            etags[idx + 1] = result;
             uploadTimes.push(result.uploadTime);
-
             completedParts++;
             setUploadProgress((completedParts / numParts) * 100);
-
-            // Increase concurrency limit after first chunk
-            if (!isFirstChunkUploaded) {
-              isFirstChunkUploaded = true;
-              setConcurrencyLimit(5);
-            }
-
             return result;
           })
         )
@@ -159,7 +163,7 @@ function App() {
         body: JSON.stringify({
           key: objectKey,
           uploadId,
-          partList: etags.map(({ PartNumber, ETag }) => ({ PartNumber, ETag })),
+          partList: etags.map(({ partNumber, eTag }) => ({ partNumber, eTag })),
           documentId,
         }),
         headers: {
@@ -167,9 +171,8 @@ function App() {
           Authorization: TOKEN,
         },
       });
-      console.log('END INIT', new Date().toLocaleTimeString());
       if (!completeRes.ok) throw new Error('Failed to complete upload');
-
+      console.log('END TIME => ', new Date().toLocaleTimeString());
       const { location } = await completeRes.json();
       alert(`Upload complete! File available at: ${location}`);
       setFile(null);
