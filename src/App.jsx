@@ -2,9 +2,9 @@ import './App.css';
 import React, { useState } from 'react';
 import pLimit from 'p-limit';
 
-const API_BASE_URL = 'https://testadmin-copy2.nitex.com/api/core';
-const TOKEN =
-  'Bearer eyJhbGciOiJIUzUxMiIsInppcCI6IkdaSVAifQ.H4sIAAAAAAAA_z3OzQqCQBQF4He5a4k0829VUIFQrlwUTYsRJ70wOsM4iiW-e-MI7Q7fvQfOBF1fQAITgb5jKv9IRiAhcDzd0oyAs_KVDYynpbns9t7OIC7ZNYE1FLltNLQu0T20qNm4wfYtbJtKqcRA-YXTyr49Vu51LRRqZJ3R52shrRUWvbYyzUaEqmiLX6pRtP9hWZqf7wRmcACpNiNCP4zjIPI9B9goLURRsDUw_wDLn9tJ3QAAAA.UjUept8rkY1uUUSDm879s9_WtWdOg7N2fl6iS7Uh_CLRLDeNKTtTrrQGNb1H7WCaXgFfxt5VgcsrdcxVMun7TA';
+const API_BASE_URL = process.env.REACT_APP_API_BASE_URL;
+// This is a mock token for testing purposes (There are no login system in this project)
+const TOKEN = process.env.REACT_APP_MOCK_TOKEN;
 
 const INITIAL_CHUNK_SIZE = 5 * 1024 * 1024; // 5MB for first  chunks
 const LATER_CHUNK_SIZE = 20 * 1024 * 1024; // 10MB for later chunks
@@ -16,9 +16,6 @@ function App() {
   const [isUploading, setIsUploading] = useState(false);
   const [error, setError] = useState(null);
   const [uploadTime, setUploadTime] = useState(0);
-  const [concurrencyLimit, setConcurrencyLimit] = useState(1);
-
-  const limit = pLimit(concurrencyLimit);
 
   const handleFileChange = async (e) => {
     const file = e.target.files[0];
@@ -73,7 +70,6 @@ function App() {
       setIsUploading(true);
       setError(null);
       setUploadProgress(0);
-      setConcurrencyLimit(1); // Reset to initial limit of 1
 
       if (file.size === 0) {
         throw new Error('Cannot upload an empty file');
